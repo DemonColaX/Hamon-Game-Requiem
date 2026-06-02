@@ -1,8 +1,5 @@
 -- OwnerAdmin LocalScript
 -- Place inside StarterPlayerScripts or StarterCharacterScripts
--- Set OWNER_NAME to your Roblox username
-
-local OWNER_NAME = "Charlottteland" -- << CHANGE THIS
 
 -- ============================================================
 -- SERVICES
@@ -14,14 +11,6 @@ local TweenService    = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local Mouse       = LocalPlayer:GetMouse()
-
--- ============================================================
--- OWNER CHECK
--- ============================================================
-if LocalPlayer.Name ~= OWNER_NAME then
-    warn("[OwnerAdmin] Not owner – script disabled.")
-    return
-end
 
 -- ============================================================
 -- WAIT FOR CHARACTER
@@ -763,26 +752,61 @@ local function MakePlayerDropdown(labelText, layoutOrder, onSelect)
 end
 
 -- ── Spectate dropdown ─────────────────────────────────────────
-local spectateDropdown = MakePlayerDropdown("👁  Spectate Player", 12, function(p, prev)
+local spectateDropdown  -- forward declared so the callback can reference it safely
+
+local function stopSpectating()
+    spectating = nil
     local cam = workspace.CurrentCamera
-    if p then
-        local tChar = p.Character
-        local tHum  = tChar and tChar:FindFirstChildOfClass("Humanoid")
-        if tHum then
-            spectating        = p
-            cam.CameraSubject = tHum
-            cam.CameraType    = Enum.CameraType.Follow
-            Toast("👁 Spectating " .. p.Name .. " – click again to stop")
-            spectateDropdown.setHeaderLabel("👁  Spectating: " .. p.Name)
-        else
-            Toast("⚠ " .. p.Name .. "'s character not loaded")
-            spectateDropdown.setHeaderLabel("👁  Spectate Player")
-        end
+    cam.CameraSubject = Humanoid
+    cam.CameraType    = Enum.CameraType.Custom
+    Toast("👁 Stopped spectating")
+    if spectateDropdown then spectateDropdown.setHeaderLabel("👁  Spectate Player") end
+end
+
+-- Stop Spectating button (sits above the dropdown, layout order 11.5)
+local stopSpectateBtn = Instance.new("TextButton")
+stopSpectateBtn.Size             = UDim2.new(1, 0, 0, 38)
+stopSpectateBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+stopSpectateBtn.Text             = "🚫  Stop Spectating"
+stopSpectateBtn.TextColor3       = Color3.fromRGB(160, 160, 180)
+stopSpectateBtn.TextSize         = 13
+stopSpectateBtn.Font             = Enum.Font.GothamBold
+stopSpectateBtn.BorderSizePixel  = 0
+stopSpectateBtn.LayoutOrder      = 11.5
+stopSpectateBtn.Parent           = ScrollFrame
+Instance.new("UICorner", stopSpectateBtn).CornerRadius = UDim.new(0, 8)
+stopSpectateBtn.MouseEnter:Connect(function()
+    TweenService:Create(stopSpectateBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(60, 60, 80)}):Play()
+end)
+stopSpectateBtn.MouseLeave:Connect(function()
+    TweenService:Create(stopSpectateBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(40, 40, 55)}):Play()
+end)
+stopSpectateBtn.MouseButton1Click:Connect(function()
+    if spectating then
+        spectateDropdown.clearSelected()
+        stopSpectating()
     else
-        spectating        = nil
-        cam.CameraSubject = Humanoid
-        cam.CameraType    = Enum.CameraType.Custom
-        Toast("👁 Stopped spectating")
+        Toast("👁 Not currently spectating")
+    end
+end)
+
+spectateDropdown = MakePlayerDropdown("👁  Spectate Player", 12, function(p, prev)
+    -- p is nil when the same player is clicked a second time (deselect)
+    if not p then
+        stopSpectating()
+        return
+    end
+    local cam   = workspace.CurrentCamera
+    local tChar = p.Character
+    local tHum  = tChar and tChar:FindFirstChildOfClass("Humanoid")
+    if tHum then
+        spectating        = p
+        cam.CameraSubject = tHum
+        cam.CameraType    = Enum.CameraType.Follow
+        Toast("👁 Spectating " .. p.Name .. " – click again to stop")
+        spectateDropdown.setHeaderLabel("👁  Spectating: " .. p.Name)
+    else
+        Toast("⚠ " .. p.Name .. "'s character not loaded")
         spectateDropdown.setHeaderLabel("👁  Spectate Player")
     end
 end)
@@ -790,12 +814,9 @@ end)
 -- Stop spectating if the target leaves
 Players.PlayerRemoving:Connect(function(p)
     if spectating == p then
-        spectating = nil
-        local cam = workspace.CurrentCamera
-        cam.CameraSubject = Humanoid
-        cam.CameraType    = Enum.CameraType.Custom
-        spectateDropdown.setHeaderLabel("👁  Spectate Player")
-        Toast("👁 " .. p.Name .. " left – stopped spectating")
+        local name = p.Name
+        stopSpectating()
+        Toast("👁 " .. name .. " left – stopped spectating")
     end
 end)
 
@@ -1105,9 +1126,354 @@ UserInputService.InputBegan:Connect(function(input, gp)
         autoPunch = not autoPunch
         punchToggleUI.SetState(autoPunch)
         if autoPunch then startAutoPunch() else stopAutoPunch() end
+    elseif input.KeyCode == Enum.KeyCode.U then
+        autoPunchZombie = not autoPunchZombie
+        zombiePunchToggleUI.SetState(autoPunchZombie)
+        if autoPunchZombie then startAutoPunchZombie() else stopAutoPunchZombie() end
     elseif input.KeyCode == Enum.KeyCode.B then
         teleportToMouse()
     end
+end)
+
+-- ============================================================
+-- 7b. AUTO-PUNCH ZOMBIES  (Toggle: U key)
+-- ============================================================
+SectionLabel("— AUTO PUNCH ZOMBIE", 18.5)
+
+-- ── Find a random live Zombie HumanoidRootPart ────────────────
+-- Looks inside Workspace > Alive for any model whose name matches
+-- "Zombie" followed by one or more digits, then returns its HRP.
+local function getZombieHRP()
+    local alive = workspace:FindFirstChild("Alive")
+    if alive then
+        for _, model in ipairs(alive:GetChildren()) do
+            -- Match any name like "Zombie28508433" (Zombie + digits)
+            if model:IsA("Model") and model.Name:match("^Zombie%d+$") then
+                local hrp = model:FindFirstChild("HumanoidRootPart")
+                if hrp then return hrp end
+            end
+        end
+    end
+    -- Fallback: search all of workspace for the same pattern
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name:match("^Zombie%d+$") then
+            local hrp = obj:FindFirstChild("HumanoidRootPart")
+            if hrp then return hrp end
+        end
+    end
+    return nil
+end
+
+-- ── Ghost-punch a zombie HRP ──────────────────────────────────
+-- Identical approach to ghostPunch(), but targets the zombie HRP
+-- rather than a punching-bag Union.
+local zombiePunchBusy = false
+
+local function ghostPunchZombie(tool, zombieHRP)
+    if not HRP or not zombieHRP then return end
+    if zombiePunchBusy then return end
+    zombiePunchBusy = true
+
+    task.spawn(function()
+        setCharacterVisible(false)
+        local returnCF = HRP.CFrame
+        -- Teleport 2 studs in front of the zombie so server range checks pass
+        HRP.CFrame = zombieHRP.CFrame * CFrame.new(0, 0, -2)
+
+        -- Fire all server-side signals while adjacent to the zombie
+        if tool then
+            local remote = tool:FindFirstChildOfClass("RemoteEvent")
+            if remote then pcall(function() remote:FireServer("Hit", zombieHRP) end) end
+            pcall(function() tool.Activated:Fire() end)
+        end
+
+        -- Fire ClickDetector / ProximityPrompt on the zombie model itself
+        local zombieModel = zombieHRP.Parent
+        if zombieModel then
+            local cd = zombieModel:FindFirstChildOfClass("ClickDetector")
+            if cd then pcall(function() fireclickdetector(cd) end) end
+            local pp = zombieModel:FindFirstChildOfClass("ProximityPrompt", true)
+            if pp then pcall(function() fireproximityprompt(pp) end) end
+        end
+
+        -- Fire any matching remotes in ReplicatedStorage
+        local rs = game:GetService("ReplicatedStorage")
+        for _, name in ipairs({"Hit", "Punch", "Damage", "DamageNPC", "ZombieHit", "NPCHit"}) do
+            local rem = rs:FindFirstChild(name, true)
+            if rem and rem:IsA("RemoteEvent") then
+                pcall(function() rem:FireServer(zombieHRP) end)
+            end
+        end
+
+        -- Fire the BindableEvents noted on the zombie's HRP
+        -- (Debris.Event and DeferredCallback.Event)
+        local debrisEvent   = workspace:FindFirstChild("Debris")
+        local deferredEvent = workspace:FindFirstChild("DeferredCallback")
+        if debrisEvent and debrisEvent:IsA("BindableEvent") then
+            pcall(function() debrisEvent:Fire(zombieHRP) end)
+        end
+        if deferredEvent and deferredEvent:IsA("BindableEvent") then
+            pcall(function() deferredEvent:Fire(zombieHRP) end)
+        end
+
+        task.wait(DWELL_TIME)
+        HRP.CFrame = returnCF
+        setCharacterVisible(true)
+        zombiePunchBusy = false
+    end)
+end
+
+-- ── Zombie punch state ────────────────────────────────────────
+local autoPunchZombie     = false
+local zombiePunchConn     = nil
+local zombieEquippedTool  = nil
+local hamonChargeConn     = nil   -- RenderStepped loop that holds G
+
+local function startAutoPunchZombie()
+    -- Find / equip slot-1 tool (same logic as Auto-Punch Bags)
+    local bp        = LocalPlayer:FindFirstChild("Backpack")
+    local slot1Tool = nil
+    if bp then
+        for _, child in ipairs(bp:GetChildren()) do
+            if child:IsA("Tool") then slot1Tool = child; break end
+        end
+    end
+    local alreadyHeld = Character and Character:FindFirstChildOfClass("Tool")
+    if not slot1Tool then slot1Tool = alreadyHeld end
+
+    if not slot1Tool then
+        Toast("⚠ No tool in hotbar!")
+        autoPunchZombie = false
+        zombiePunchToggleUI.SetState(false)
+        return
+    end
+
+    if not alreadyHeld or alreadyHeld ~= slot1Tool then
+        pcall(function() Humanoid:UnequipTools() end)
+        task.wait(0.05)
+        pcall(function()
+            vim:SendKeyEvent(true,  Enum.KeyCode.One, false, game)
+            vim:SendKeyEvent(false, Enum.KeyCode.One, false, game)
+        end)
+        local waited = 0
+        while waited < 0.5 do
+            task.wait(0.05); waited += 0.05
+            if Character and Character:FindFirstChildOfClass("Tool") then break end
+        end
+    end
+
+    zombieEquippedTool = Character and Character:FindFirstChildOfClass("Tool")
+    if not zombieEquippedTool then
+        pcall(function() Humanoid:EquipTool(slot1Tool) end)
+        task.wait(0.1)
+        zombieEquippedTool = Character and Character:FindFirstChildOfClass("Tool") or slot1Tool
+    end
+
+    if not zombieEquippedTool then
+        Toast("⚠ Could not equip slot 1 tool!")
+        autoPunchZombie = false
+        zombiePunchToggleUI.SetState(false)
+        return
+    end
+
+    Toast("🧟 Auto-Punch Zombie ON – " .. zombieEquippedTool.Name .. " (G held)")
+    -- Hold G to charge Hamon. Strategy: press G once, hold for a long window,
+    -- release briefly, then press again. This mimics a real held keypress so
+    -- games using IsKeyDown() / InputBegan / InputEnded all register it correctly.
+    -- Spamming SendKeyEvent(true) every frame floods InputBegan with rapid
+    -- press/release cycles instead of sustaining a genuine hold, which is why
+    -- the bar wouldn't move before.
+    if hamonChargeConn then hamonChargeConn:Disconnect() end
+
+    local HAMON_HOLD = 1.5   -- seconds to hold G before cycling
+    local HAMON_GAP  = 0.08  -- brief release so InputBegan fires again next cycle
+    local hamonTimer = 0
+    local hamonPhase = "hold"  -- starts in "hold" after the initial press below
+
+    -- Initial press
+    pcall(function() vim:SendKeyEvent(true, Enum.KeyCode.G, false, game) end)
+
+    hamonChargeConn = RunService.Heartbeat:Connect(function(dt)
+        if not autoPunchZombie then
+            hamonChargeConn:Disconnect()
+            hamonChargeConn = nil
+            pcall(function() vim:SendKeyEvent(false, Enum.KeyCode.G, false, game) end)
+            return
+        end
+
+        hamonTimer += dt
+
+        if hamonPhase == "hold" and hamonTimer >= HAMON_HOLD then
+            -- Release G briefly
+            pcall(function() vim:SendKeyEvent(false, Enum.KeyCode.G, false, game) end)
+            hamonPhase = "release"
+            hamonTimer = 0
+
+        elseif hamonPhase == "release" and hamonTimer >= HAMON_GAP then
+            -- Press G again for the next hold window
+            pcall(function() vim:SendKeyEvent(true, Enum.KeyCode.G, false, game) end)
+            hamonPhase = "hold"
+            hamonTimer = 0
+        end
+    end)
+
+    -- Heartbeat loop — no interval cooldown; zombiePunchBusy (cleared after
+    -- DWELL_TIME inside ghostPunchZombie) is the sole rate limiter, identical
+    -- to how the bag punch works. This keeps the character invisible continuously.
+    zombiePunchConn = RunService.Heartbeat:Connect(function(dt)
+        if not autoPunchZombie then
+            zombiePunchConn:Disconnect()
+            zombiePunchConn = nil
+            return
+        end
+
+        -- Skip if a ghost-punch is already in flight
+        if zombiePunchBusy then return end
+
+        zombieEquippedTool = Character and Character:FindFirstChildOfClass("Tool") or zombieEquippedTool
+
+        -- Primary: tool:Activate()
+        if zombieEquippedTool then
+            pcall(function() zombieEquippedTool:Activate() end)
+        end
+
+        -- Secondary: real LMB click via VIM
+        task.spawn(function()
+            pcall(function()
+                local mp = UserInputService:GetMouseLocation()
+                vim:SendMouseButtonEvent(mp.X, mp.Y, 0, true,  game, 1)
+                task.wait(0.05)
+                vim:SendMouseButtonEvent(mp.X, mp.Y, 0, false, game, 1)
+            end)
+        end)
+
+        -- Ghost-teleport to the zombie HRP and fire server remotes
+        local zombieHRP = getZombieHRP()
+        if zombieHRP then
+            ghostPunchZombie(zombieEquippedTool, zombieHRP)
+        else
+            Toast("⚠ No Zombie found in Workspace > Alive")
+        end
+    end)
+end
+
+local function stopAutoPunchZombie()
+    autoPunchZombie = false
+    if zombiePunchConn then
+        zombiePunchConn:Disconnect()
+        zombiePunchConn = nil
+    end
+    -- Stop holding G and release the key so Hamon charging stops cleanly
+    if hamonChargeConn then
+        hamonChargeConn:Disconnect()
+        hamonChargeConn = nil
+    end
+    pcall(function() vim:SendKeyEvent(false, Enum.KeyCode.G, false, game) end)
+    setCharacterVisible(true)
+    zombiePunchBusy = false
+    Toast("🧟 Auto-Punch Zombie OFF")
+end
+
+local zombiePunchToggleUI
+zombiePunchToggleUI = ToggleButton("🧟  Auto-Punch Zombies  [U]", 18.6, function(on)
+    autoPunchZombie = on
+    if on then startAutoPunchZombie() else stopAutoPunchZombie() end
+end)
+
+
+-- ============================================================
+-- 7c. AUTO PICK UP STONE MASK  (Toggle)
+-- ============================================================
+SectionLabel("— STONE MASK", 18.8)
+
+-- ── Resolve the Stone Mask Handle via exact path ─────────────
+local function getStoneMaskHandle()
+    local serverJunk  = workspace:FindFirstChild("ServerJunk")
+    local spawnedItems = serverJunk and serverJunk:FindFirstChild("SpawnedItems")
+    local stoneMask   = spawnedItems and spawnedItems:FindFirstChild("Stone Mask")
+    local handle      = stoneMask and stoneMask:FindFirstChild("Handle")
+    if handle then return handle end
+    -- Fallback: search anywhere in workspace for a Tool named "Stone Mask"
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Tool") and obj.Name == "Stone Mask" then
+            local h = obj:FindFirstChild("Handle")
+            if h then return h end
+        end
+    end
+    return nil
+end
+
+local autoMask     = false
+local maskConn     = nil
+local maskBusy     = false  -- prevents overlap, same pattern as ghostPunch
+
+-- ── Ghost-teleport to the Handle, fire all pickup signals, return ─
+local function ghostPickupMask(handle)
+    if not HRP or not handle then return end
+    if maskBusy then return end
+    maskBusy = true
+
+    task.spawn(function()
+        local returnCF = HRP.CFrame
+
+        -- Teleport onto the Handle so TouchTransmitter.TouchStarted fires
+        HRP.CFrame = handle.CFrame
+
+        -- Fire Tool signals on the parent Stone Mask tool
+        local maskTool = handle.Parent
+        if maskTool and maskTool:IsA("Tool") then
+            pcall(function() maskTool:Activate() end)
+            pcall(function()
+                local rem = maskTool:FindFirstChildOfClass("RemoteEvent")
+                if rem then rem:FireServer("Pickup", handle) end
+            end)
+        end
+
+        -- Fire the workspace BindableEvents (Debris.Event & DeferredCallback.Event)
+        local debrisEv   = workspace:FindFirstChild("Debris")
+        local deferredEv = workspace:FindFirstChild("DeferredCallback")
+        if debrisEv   and debrisEv:IsA("BindableEvent")   then pcall(function() debrisEv:Fire(handle)   end) end
+        if deferredEv and deferredEv:IsA("BindableEvent") then pcall(function() deferredEv:Fire(handle) end) end
+
+        -- Fire any ReplicatedStorage pickup remotes
+        local rs = game:GetService("ReplicatedStorage")
+        for _, name in ipairs({"Pickup", "PickupItem", "CollectItem", "ItemPickup", "TouchItem"}) do
+            local rem = rs:FindFirstChild(name, true)
+            if rem and rem:IsA("RemoteEvent") then
+                pcall(function() rem:FireServer(handle) end)
+            end
+        end
+
+        -- Dwell briefly so the server registers the touch, then snap back
+        task.wait(DWELL_TIME)
+        HRP.CFrame = returnCF
+        maskBusy = false
+    end)
+end
+
+local function startAutoMask()
+    Toast("🎭 Auto Pick-up Stone Mask ON")
+    -- Use a looping task rather than Heartbeat so task.wait() is safe
+    task.spawn(function()
+        while autoMask do
+            local handle = getStoneMaskHandle()
+            if handle then
+                ghostPickupMask(handle)
+            end
+            task.wait(DWELL_TIME + 0.05)  -- wait just past the dwell so the previous ghost finishes
+        end
+    end)
+end
+
+local function stopAutoMask()
+    autoMask = false
+    maskBusy  = false
+    Toast("🎭 Auto Pick-up Stone Mask OFF")
+end
+
+ToggleButton("🎭  Auto Pick-up Stone Mask", 18.9, function(on)
+    autoMask = on
+    if on then startAutoMask() else stopAutoMask() end
 end)
 
 -- ============================================================
